@@ -1,0 +1,17 @@
+{
+  "name": "incidentio-alert-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for incident.io alerts integration",
+  "main": "./incidentio-alert-mcp",
+  "command": "go",
+  "args": ["run", "."],
+  "mcpServers": {
+    "incidentio-alert": {
+      "command": "./incidentio-alert-mcp",
+      "args": [],
+      "env": {
+        "INCIDENTIO_API_KEY": "${INCIDENTIO_API_KEY}"
+      }
+    }
+  }
+}
