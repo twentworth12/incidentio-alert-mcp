@@ -29,18 +29,22 @@ type Server struct{
 }
 
 func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result interface{}, err error) {
+	log.Printf("Handling request: %s", req.Method)
+	
 	switch req.Method {
 	case "initialize":
 		var params InitializeParams
-		if err := json.Unmarshal(*req.Params, &params); err != nil {
-			return nil, &jsonrpc2.Error{
-				Code:    jsonrpc2.CodeParseError,
-				Message: fmt.Sprintf("failed to parse params: %v", err),
+		if req.Params != nil {
+			if err := json.Unmarshal(*req.Params, &params); err != nil {
+				return nil, &jsonrpc2.Error{
+					Code:    jsonrpc2.CodeParseError,
+					Message: fmt.Sprintf("failed to parse params: %v", err),
+				}
 			}
 		}
 
 		result := InitializeResult{
-			ProtocolVersion: "0.1.0",
+			ProtocolVersion: "2024-11-05",
 			Capabilities: ServerCapabilities{
 				Tools: ToolsCapability{
 					ListChanged: true,
@@ -51,7 +55,8 @@ func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 				Version: "0.1.0",
 			},
 		}
-
+		
+		log.Printf("Sending initialize response: %+v", result)
 		return result, nil
 
 	case "initialized":
@@ -100,10 +105,12 @@ func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 
 	case "tools/call":
 		var params ToolCallParams
-		if err := json.Unmarshal(*req.Params, &params); err != nil {
-			return nil, &jsonrpc2.Error{
-				Code:    jsonrpc2.CodeParseError,
-				Message: fmt.Sprintf("failed to parse params: %v", err),
+		if req.Params != nil {
+			if err := json.Unmarshal(*req.Params, &params); err != nil {
+				return nil, &jsonrpc2.Error{
+					Code:    jsonrpc2.CodeParseError,
+					Message: fmt.Sprintf("failed to parse params: %v", err),
+				}
 			}
 		}
 
