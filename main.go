@@ -2,26 +2,41 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 
-	"github.com/sourcegraph/go-lsp"
 	"github.com/sourcegraph/jsonrpc2"
 )
 
-type Server struct{}
+type stdioReadWriteCloser struct{}
 
-func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+func (c stdioReadWriteCloser) Read(p []byte) (n int, err error) {
+	return os.Stdin.Read(p)
+}
+
+func (c stdioReadWriteCloser) Write(p []byte) (n int, err error) {
+	return os.Stdout.Write(p)
+}
+
+func (c stdioReadWriteCloser) Close() error {
+	return nil
+}
+
+type Server struct{
+	client *IncidentIOClient
+}
+
+func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result interface{}, err error) {
 	switch req.Method {
 	case "initialize":
 		var params InitializeParams
-		if err := req.Params.Unmarshal(&params); err != nil {
-			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+		if err := json.Unmarshal(*req.Params, &params); err != nil {
+			return nil, &jsonrpc2.Error{
 				Code:    jsonrpc2.CodeParseError,
 				Message: fmt.Sprintf("failed to parse params: %v", err),
-			})
-			return
+			}
 		}
 
 		result := InitializeResult{
@@ -37,77 +52,133 @@ func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 			},
 		}
 
-		conn.Reply(ctx, req.ID, result)
+		return result, nil
 
 	case "initialized":
 		// Client has been initialized
 		log.Println("Client initialized")
+		return nil, nil
 
 	case "tools/list":
 		tools := []Tool{
 			{
-				Name:        "get_alerts",
-				Description: "Retrieve incident.io alerts",
+				Name:        "send_alert",
+				Description: "Send an alert to incident.io",
 				InputSchema: map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
+						"title": map[string]interface{}{
+							"type":        "string",
+							"description": "Alert title",
+						},
+						"description": map[string]interface{}{
+							"type":        "string",
+							"description": "Alert description",
+						},
+						"deduplication_key": map[string]interface{}{
+							"type":        "string",
+							"description": "Unique key to deduplicate alerts",
+						},
 						"status": map[string]interface{}{
 							"type":        "string",
-							"description": "Filter by alert status",
-							"enum":        []string{"active", "resolved", "all"},
+							"description": "Alert status",
+							"enum":        []string{"firing", "resolved"},
+							"default":     "firing",
+						},
+						"metadata": map[string]interface{}{
+							"type":        "object",
+							"description": "Additional metadata",
+							"additionalProperties": true,
 						},
 					},
+					"required": []string{"title", "deduplication_key"},
 				},
 			},
 		}
 
-		conn.Reply(ctx, req.ID, ToolsList{Tools: tools})
+		return ToolsList{Tools: tools}, nil
 
 	case "tools/call":
 		var params ToolCallParams
-		if err := req.Params.Unmarshal(&params); err != nil {
-			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+		if err := json.Unmarshal(*req.Params, &params); err != nil {
+			return nil, &jsonrpc2.Error{
 				Code:    jsonrpc2.CodeParseError,
 				Message: fmt.Sprintf("failed to parse params: %v", err),
-			})
-			return
+			}
 		}
 
 		switch params.Name {
-		case "get_alerts":
-			// TODO: Implement actual incident.io API call
+		case "send_alert":
+			var args struct {
+				Title            string                 `json:"title"`
+				Description      string                 `json:"description"`
+				DeduplicationKey string                 `json:"deduplication_key"`
+				Status           string                 `json:"status"`
+				Metadata         map[string]interface{} `json:"metadata"`
+			}
+			
+			if err := json.Unmarshal(params.Arguments, &args); err != nil {
+				return nil, &jsonrpc2.Error{
+					Code:    jsonrpc2.CodeInvalidParams,
+					Message: fmt.Sprintf("failed to parse arguments: %v", err),
+				}
+			}
+			
+			// Default status to firing if not provided
+			if args.Status == "" {
+				args.Status = "firing"
+			}
+			
+			alert := AlertEvent{
+				Title:            args.Title,
+				Description:      args.Description,
+				DeduplicationKey: args.DeduplicationKey,
+				Status:           args.Status,
+				Metadata:         args.Metadata,
+			}
+			
+			if err := s.client.SendAlert(alert); err != nil {
+				return nil, &jsonrpc2.Error{
+					Code:    jsonrpc2.CodeInternalError,
+					Message: fmt.Sprintf("failed to send alert: %v", err),
+				}
+			}
+			
 			result := []ToolCallContentResult{
 				{
 					Type: "text",
-					Text: "Alert 1: Database connection timeout\nStatus: Active\nSeverity: High",
+					Text: fmt.Sprintf("Alert sent successfully: %s (key: %s, status: %s)", args.Title, args.DeduplicationKey, args.Status),
 				},
 			}
-			conn.Reply(ctx, req.ID, ToolCallResult{Content: result})
+			return ToolCallResult{Content: result}, nil
 
 		default:
-			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+			return nil, &jsonrpc2.Error{
 				Code:    jsonrpc2.CodeMethodNotFound,
 				Message: fmt.Sprintf("unknown tool: %s", params.Name),
-			})
+			}
 		}
 
 	default:
-		conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+		return nil, &jsonrpc2.Error{
 			Code:    jsonrpc2.CodeMethodNotFound,
 			Message: fmt.Sprintf("method not found: %s", req.Method),
-		})
+		}
 	}
 }
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	
-	server := &Server{}
+	client := NewIncidentIOClient()
+	server := &Server{
+		client: client,
+	}
 	
 	conn := jsonrpc2.NewConn(
 		context.Background(),
 		jsonrpc2.NewBufferedStream(
-			lsp.StdioReadWriteCloser{},
+			stdioReadWriteCloser{},
 			jsonrpc2.VSCodeObjectCodec{},
 		),
 		jsonrpc2.HandlerWithError(server.Handle),
