@@ -1,44 +1,52 @@
 package main
 
 import (
-	"context"
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
-
-	"github.com/sourcegraph/jsonrpc2"
 )
 
-type stdioReadWriteCloser struct{}
-
-func (c stdioReadWriteCloser) Read(p []byte) (n int, err error) {
-	return os.Stdin.Read(p)
-}
-
-func (c stdioReadWriteCloser) Write(p []byte) (n int, err error) {
-	return os.Stdout.Write(p)
-}
-
-func (c stdioReadWriteCloser) Close() error {
-	return nil
-}
-
-type Server struct{
+type Server struct {
 	client *IncidentIOClient
 }
 
-func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result interface{}, err error) {
+type Request struct {
+	Jsonrpc string          `json:"jsonrpc"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	ID      interface{}     `json:"id,omitempty"`
+}
+
+type Response struct {
+	Jsonrpc string      `json:"jsonrpc"`
+	Result  interface{} `json:"result,omitempty"`
+	Error   *Error      `json:"error,omitempty"`
+	ID      interface{} `json:"id"`
+}
+
+type Error struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func (s *Server) handleRequest(req Request) Response {
 	log.Printf("Handling request: %s", req.Method)
 	
 	switch req.Method {
 	case "initialize":
 		var params InitializeParams
 		if req.Params != nil {
-			if err := json.Unmarshal(*req.Params, &params); err != nil {
-				return nil, &jsonrpc2.Error{
-					Code:    jsonrpc2.CodeParseError,
-					Message: fmt.Sprintf("failed to parse params: %v", err),
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				return Response{
+					Jsonrpc: "2.0",
+					Error: &Error{
+						Code:    -32700,
+						Message: fmt.Sprintf("failed to parse params: %v", err),
+					},
+					ID: req.ID,
 				}
 			}
 		}
@@ -57,12 +65,16 @@ func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 		}
 		
 		log.Printf("Sending initialize response: %+v", result)
-		return result, nil
+		return Response{
+			Jsonrpc: "2.0",
+			Result:  result,
+			ID:      req.ID,
+		}
 
 	case "initialized":
-		// Client has been initialized
 		log.Println("Client initialized")
-		return nil, nil
+		// No response needed for notifications
+		return Response{Jsonrpc: "2.0", ID: req.ID}
 
 	case "tools/list":
 		tools := []Tool{
@@ -101,15 +113,23 @@ func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 			},
 		}
 
-		return ToolsList{Tools: tools}, nil
+		return Response{
+			Jsonrpc: "2.0",
+			Result:  ToolsList{Tools: tools},
+			ID:      req.ID,
+		}
 
 	case "tools/call":
 		var params ToolCallParams
 		if req.Params != nil {
-			if err := json.Unmarshal(*req.Params, &params); err != nil {
-				return nil, &jsonrpc2.Error{
-					Code:    jsonrpc2.CodeParseError,
-					Message: fmt.Sprintf("failed to parse params: %v", err),
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				return Response{
+					Jsonrpc: "2.0",
+					Error: &Error{
+						Code:    -32602,
+						Message: fmt.Sprintf("failed to parse params: %v", err),
+					},
+					ID: req.ID,
 				}
 			}
 		}
@@ -125,9 +145,13 @@ func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 			}
 			
 			if err := json.Unmarshal(params.Arguments, &args); err != nil {
-				return nil, &jsonrpc2.Error{
-					Code:    jsonrpc2.CodeInvalidParams,
-					Message: fmt.Sprintf("failed to parse arguments: %v", err),
+				return Response{
+					Jsonrpc: "2.0",
+					Error: &Error{
+						Code:    -32602,
+						Message: fmt.Sprintf("failed to parse arguments: %v", err),
+					},
+					ID: req.ID,
 				}
 			}
 			
@@ -145,9 +169,13 @@ func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 			}
 			
 			if err := s.client.SendAlert(alert); err != nil {
-				return nil, &jsonrpc2.Error{
-					Code:    jsonrpc2.CodeInternalError,
-					Message: fmt.Sprintf("failed to send alert: %v", err),
+				return Response{
+					Jsonrpc: "2.0",
+					Error: &Error{
+						Code:    -32603,
+						Message: fmt.Sprintf("failed to send alert: %v", err),
+					},
+					ID: req.ID,
 				}
 			}
 			
@@ -157,42 +185,79 @@ func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 					Text: fmt.Sprintf("Alert sent successfully: %s (key: %s, status: %s)", args.Title, args.DeduplicationKey, args.Status),
 				},
 			}
-			return ToolCallResult{Content: result}, nil
+			return Response{
+				Jsonrpc: "2.0",
+				Result:  ToolCallResult{Content: result},
+				ID:      req.ID,
+			}
 
 		default:
-			return nil, &jsonrpc2.Error{
-				Code:    jsonrpc2.CodeMethodNotFound,
-				Message: fmt.Sprintf("unknown tool: %s", params.Name),
+			return Response{
+				Jsonrpc: "2.0",
+				Error: &Error{
+					Code:    -32601,
+					Message: fmt.Sprintf("unknown tool: %s", params.Name),
+				},
+				ID: req.ID,
 			}
 		}
 
 	default:
-		return nil, &jsonrpc2.Error{
-			Code:    jsonrpc2.CodeMethodNotFound,
-			Message: fmt.Sprintf("method not found: %s", req.Method),
+		return Response{
+			Jsonrpc: "2.0",
+			Error: &Error{
+				Code:    -32601,
+				Message: fmt.Sprintf("method not found: %s", req.Method),
+			},
+			ID: req.ID,
 		}
+	}
+}
+
+func (s *Server) Run() {
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		line := scanner.Text()
+		log.Printf("Received: %s", line)
+		
+		var req Request
+		if err := json.Unmarshal([]byte(line), &req); err != nil {
+			log.Printf("Failed to parse request: %v", err)
+			continue
+		}
+		
+		resp := s.handleRequest(req)
+		
+		// Only send response if there's an ID (not a notification)
+		if req.ID != nil {
+			respBytes, err := json.Marshal(resp)
+			if err != nil {
+				log.Printf("Failed to marshal response: %v", err)
+				continue
+			}
+			
+			fmt.Printf("%s\n", respBytes)
+			log.Printf("Sent response: %s", respBytes)
+		}
+	}
+	
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		log.Printf("Scanner error: %v", err)
 	}
 }
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.SetOutput(os.Stderr) // Ensure logs go to stderr
+	
+	log.Println("incidentio-alert-mcp server starting...")
 	
 	client := NewIncidentIOClient()
 	server := &Server{
 		client: client,
 	}
 	
-	conn := jsonrpc2.NewConn(
-		context.Background(),
-		jsonrpc2.NewBufferedStream(
-			stdioReadWriteCloser{},
-			jsonrpc2.VSCodeObjectCodec{},
-		),
-		jsonrpc2.HandlerWithError(server.Handle),
-	)
+	server.Run()
 	
-	log.Println("incidentio-alert-mcp server started")
-	
-	<-conn.DisconnectNotify()
-	log.Println("Connection closed")
+	log.Println("incidentio-alert-mcp server stopped")
 }
