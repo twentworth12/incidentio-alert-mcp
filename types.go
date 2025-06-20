@@ -59,3 +59,19 @@ type ToolCallContentResult struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
+
+type Prompt struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Arguments   []PromptArgument       `json:"arguments,omitempty"`
+}
+
+type PromptArgument struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required,omitempty"`
+}
+
+type PromptsList struct {
+	Prompts []Prompt `json:"prompts"`
+}

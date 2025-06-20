@@ -16,12 +16,12 @@ type IncidentIOClient struct {
 func NewIncidentIOClient() *IncidentIOClient {
 	webhookURL := os.Getenv("INCIDENTIO_WEBHOOK_URL")
 	if webhookURL == "" {
-		webhookURL = "https://api.incident.io/v2/alert_events/http/01JW94DSV48YMEFX7G6SFNDNM0"
+		panic("INCIDENTIO_WEBHOOK_URL environment variable is required")
 	}
 	
 	apiToken := os.Getenv("INCIDENTIO_API_TOKEN")
 	if apiToken == "" {
-		apiToken = "894e2f38ea082357dda1f46270841bf294b2606581598b615a82774c7e9a440a"
+		panic("INCIDENTIO_API_TOKEN environment variable is required")
 	}
 	
 	return &IncidentIOClient{

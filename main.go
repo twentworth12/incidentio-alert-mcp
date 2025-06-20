@@ -76,6 +76,13 @@ func (s *Server) handleRequest(req Request) Response {
 		// No response needed for notifications
 		return Response{Jsonrpc: "2.0", ID: req.ID}
 
+	case "prompts/list":
+		return Response{
+			Jsonrpc: "2.0",
+			Result:  PromptsList{Prompts: []Prompt{}},
+			ID:      req.ID,
+		}
+
 	case "tools/list":
 		tools := []Tool{
 			{
@@ -142,6 +149,7 @@ func (s *Server) handleRequest(req Request) Response {
 				DeduplicationKey string                 `json:"deduplication_key"`
 				Status           string                 `json:"status"`
 				Metadata         map[string]interface{} `json:"metadata"`
+				ClaudeMcpAuthToken string               `json:"_claudeMcpAuthToken"`
 			}
 			
 			if err := json.Unmarshal(params.Arguments, &args); err != nil {
